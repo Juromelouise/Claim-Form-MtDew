@@ -1,5 +1,5 @@
 // Claim form server. Node 22+, Postgres (Supabase). Signatures are stored as PNG bytes in the claims table.
-// Run: DATABASE_URL=postgres://... ADMIN_PASS=secret node server.js   ->  http://localhost:3000
+// Run: npm start (reads .env if present)   ->  http://localhost:3000
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -7,12 +7,14 @@ const { Pool } = require('pg');
 
 const PORT = process.env.PORT || 3000;
 const ADMIN_PASS = process.env.ADMIN_PASS;
-if (!ADMIN_PASS || !process.env.DATABASE_URL) {
-  console.error('Set DATABASE_URL and ADMIN_PASS environment variables.');
+const DB_URL = process.env.DATABASE_URL || process.env.SUPABASE_CONNECTION_STRING;
+if (!ADMIN_PASS || !DB_URL) {
+  console.error('Set ADMIN_PASS and DATABASE_URL (or SUPABASE_CONNECTION_STRING) environment variables.');
   process.exit(1);
 }
 
-const db = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
+const db = new Pool({ connectionString: DB_URL, ssl: { rejectUnauthorized: false } });
+db.on('error', (e) => console.error('DB idle client error:', e.message)); // pooler drops idle conns; don't crash
 const SCHEMA = `CREATE TABLE IF NOT EXISTS claims (
   id SERIAL PRIMARY KEY,
   name TEXT NOT NULL,
