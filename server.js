@@ -1,21 +1,20 @@
-// Claim form server. Node 22.13+ (uses built-in node:sqlite, no npm install).
-// Data:       data/claims.db  (SQLite)
-// Signatures: data/signatures/<id>-participant.png, <id>-guardian.png
-// Run: ADMIN_PASS=secret node server.js   ->  http://localhost:3000
+// Claim form server. Node 22+, Postgres (Supabase). Signatures are stored as PNG bytes in the claims table.
+// Run: DATABASE_URL=postgres://... ADMIN_PASS=secret node server.js   ->  http://localhost:3000
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
-const { DatabaseSync } = require('node:sqlite');
+const { Pool } = require('pg');
 
 const PORT = process.env.PORT || 3000;
-const ADMIN_PASS = process.env.ADMIN_PASS || 'Admin@1234'; // change this in production
-const DATA = path.join(__dirname, 'data');
-const SIGS = path.join(DATA, 'signatures');
-fs.mkdirSync(SIGS, { recursive: true });
+const ADMIN_PASS = process.env.ADMIN_PASS;
+if (!ADMIN_PASS || !process.env.DATABASE_URL) {
+  console.error('Set DATABASE_URL and ADMIN_PASS environment variables.');
+  process.exit(1);
+}
 
-const db = new DatabaseSync(path.join(DATA, 'claims.db'));
-db.exec(`CREATE TABLE IF NOT EXISTS claims (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+const db = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
+const SCHEMA = `CREATE TABLE IF NOT EXISTS claims (
+  id SERIAL PRIMARY KEY,
   name TEXT NOT NULL,
   address TEXT NOT NULL,
   printed_name TEXT NOT NULL,
@@ -23,12 +22,15 @@ db.exec(`CREATE TABLE IF NOT EXISTS claims (
   is_minor INTEGER NOT NULL DEFAULT 0,
   guardian_name TEXT,
   guardian_date TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
-)`);
+  participant_sig BYTEA NOT NULL,
+  guardian_sig BYTEA,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)`;
+// Everything except the signature bytes
+const COLS = 'id, name, address, printed_name, sign_date, is_minor, guardian_name, guardian_date, created_at';
 
 const PNG_PREFIX = 'data:image/png;base64,';
-const savePng = (dataUrl, file) =>
-  fs.writeFileSync(path.join(SIGS, file), Buffer.from(dataUrl.slice(PNG_PREFIX.length), 'base64'));
+const png = (dataUrl) => Buffer.from(dataUrl.slice(PNG_PREFIX.length), 'base64');
 const isPng = (s) => typeof s === 'string' && s.startsWith(PNG_PREFIX) && s.length < 2_000_000;
 const str = (s, max = 500) => (typeof s === 'string' ? s.trim().slice(0, max) : '');
 
@@ -54,12 +56,18 @@ function readBody(req) {
   });
 }
 
-http.createServer(async (req, res) => {
+async function handle(req, res) {
   const url = new URL(req.url, 'http://x');
   const p = url.pathname;
 
   // Public: the form
   if (req.method === 'GET' && p === '/') return send(res, 200, fs.readFileSync(path.join(__dirname, 'index.html')), 'text/html');
+
+  // Public: keep-alive ping (cron-job.org) — touches the DB so Supabase doesn't pause
+  if (p === '/health') {
+    await db.query('SELECT 1');
+    return send(res, 200, 'ok', 'text/plain');
+  }
 
   // Public: submit
   if (req.method === 'POST' && p === '/api/claims') {
@@ -75,13 +83,13 @@ http.createServer(async (req, res) => {
     if (c.is_minor && (!c.guardian_name || !c.guardian_date || !isPng(b.guardian_signature)))
       return send(res, 400, { error: 'Parent/guardian section is required for participants under 18.' });
 
-    const { lastInsertRowid: id } = db.prepare(
-      `INSERT INTO claims (name,address,printed_name,sign_date,is_minor,guardian_name,guardian_date)
-       VALUES (?,?,?,?,?,?,?)`
-    ).run(c.name, c.address, c.printed_name, c.sign_date, c.is_minor, c.guardian_name || null, c.guardian_date || null);
-    savePng(b.signature, `${id}-participant.png`);
-    if (c.is_minor) savePng(b.guardian_signature, `${id}-guardian.png`);
-    return send(res, 201, { id: Number(id) });
+    const { rows: [{ id }] } = await db.query(
+      `INSERT INTO claims (name,address,printed_name,sign_date,is_minor,guardian_name,guardian_date,participant_sig,guardian_sig)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+      [c.name, c.address, c.printed_name, c.sign_date, c.is_minor, c.guardian_name || null, c.guardian_date || null,
+        png(b.signature), c.is_minor ? png(b.guardian_signature) : null]
+    );
+    return send(res, 201, { id });
   }
 
   // Admin only below
@@ -91,7 +99,7 @@ http.createServer(async (req, res) => {
   }
 
   if (p === '/admin') {
-    const rows = db.prepare('SELECT * FROM claims ORDER BY id DESC').all();
+    const { rows } = await db.query(`SELECT ${COLS} FROM claims ORDER BY id DESC`);
     const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (ch) => `&#${ch.charCodeAt(0)};`);
     return send(res, 200, `<!doctype html><meta charset="utf-8"><title>Claims</title>
       <style>body{font-family:sans-serif;padding:16px}table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:6px;text-align:left}</style>
@@ -99,7 +107,7 @@ http.createServer(async (req, res) => {
       <script>qrUrl.value = location.origin + '/'; // if this says localhost, type the LAN/public address users can reach</script>
       <h1>Claims (${rows.length})</h1><table><tr><th>#</th><th>Name</th><th>Address</th><th>Date</th><th>Minor</th><th>Submitted</th><th></th></tr>
       ${rows.map((r) => `<tr><td>${r.id}</td><td>${esc(r.name)}</td><td>${esc(r.address)}</td><td>${esc(r.sign_date)}</td>
-        <td>${r.is_minor ? 'Yes' : 'No'}</td><td>${esc(r.created_at)}</td><td><a href="/?view=${r.id}">View / Print</a></td></tr>`).join('')}
+        <td>${r.is_minor ? 'Yes' : 'No'}</td><td>${esc(r.created_at.toLocaleString())}</td><td><a href="/?view=${r.id}">View / Print</a></td></tr>`).join('')}
       </table>`, 'text/html');
   }
 
@@ -119,12 +127,23 @@ http.createServer(async (req, res) => {
 
   const m = p.match(/^\/api\/claims\/(\d+)$/);
   if (m) {
-    const row = db.prepare('SELECT * FROM claims WHERE id = ?').get(Number(m[1]));
+    const { rows: [row] } = await db.query(`SELECT ${COLS} FROM claims WHERE id = $1`, [Number(m[1])]);
     return row ? send(res, 200, row) : send(res, 404, { error: 'Not found' });
   }
 
-  const s = p.match(/^\/signatures\/(\d+-(participant|guardian)\.png)$/);
-  if (s && fs.existsSync(path.join(SIGS, s[1]))) return send(res, 200, fs.readFileSync(path.join(SIGS, s[1])), 'image/png');
+  // Same URLs as before (/signatures/<id>-participant.png), now served from the DB
+  const s = p.match(/^\/signatures\/(\d+)-(participant|guardian)\.png$/);
+  if (s) {
+    const { rows: [row] } = await db.query(`SELECT ${s[2]}_sig AS img FROM claims WHERE id = $1`, [Number(s[1])]);
+    if (row?.img) return send(res, 200, row.img, 'image/png');
+  }
 
   send(res, 404, 'Not found', 'text/plain');
-}).listen(PORT, () => console.log(`Claim form: http://localhost:${PORT}  |  Admin: http://localhost:${PORT}/admin`));
+}
+
+db.query(SCHEMA).then(() =>
+  http.createServer((req, res) => handle(req, res).catch((e) => {
+    console.error(e);
+    if (!res.headersSent) send(res, 500, { error: 'Server error, please try again.' });
+  })).listen(PORT, () => console.log(`Claim form: http://localhost:${PORT}  |  Admin: http://localhost:${PORT}/admin`))
+);
