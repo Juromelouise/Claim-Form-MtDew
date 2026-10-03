@@ -107,8 +107,8 @@ async function handle(req, res) {
       <style>body{font-family:sans-serif;padding:16px}table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:6px;text-align:left}</style>
       <form action="/admin/qr" target="_blank">Form link: <input name="url" id="qrUrl" size="40"> <button>Show QR</button></form>
       <script>qrUrl.value = location.origin + '/'; // if this says localhost, type the LAN/public address users can reach</script>
-      <h1>Claims (${rows.length})</h1><table><tr><th>#</th><th>Name</th><th>Address</th><th>Date</th><th>Minor</th><th>Submitted</th><th></th></tr>
-      ${rows.map((r) => `<tr><td>${r.id}</td><td>${esc(r.name)}</td><td>${esc(r.address)}</td><td>${esc(r.sign_date)}</td>
+      <h1>Claims (${rows.length})</h1><table><tr><th>#</th><th>Name</th><th>Address</th><th>Minor</th><th>Submitted</th><th></th></tr>
+      ${rows.map((r) => `<tr><td>${r.id}</td><td>${esc(r.name)}</td><td>${esc(r.address)}</td>
         <td>${r.is_minor ? 'Yes' : 'No'}</td><td>${esc(r.created_at.toLocaleString())}</td><td><a href="/?view=${r.id}">View / Print</a></td></tr>`).join('')}
       </table>`, 'text/html');
   }
