@@ -1,0 +1,6 @@
+{
+  "name": "claim-form",
+  "private": true,
+  "engines": { "node": ">=22.13" },
+  "scripts": { "start": "node server.js" }
+}
