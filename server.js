@@ -95,22 +95,26 @@ http.createServer(async (req, res) => {
     const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (ch) => `&#${ch.charCodeAt(0)};`);
     return send(res, 200, `<!doctype html><meta charset="utf-8"><title>Claims</title>
       <style>body{font-family:sans-serif;padding:16px}table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:6px;text-align:left}</style>
-      <p>Form link: <input id="qrUrl" size="40"> <button onclick="showQr()">Show QR</button></p>
-      <dialog id="qrDlg" style="text-align:center;border:0"><div id="qr"></div><p id="qrTxt"></p><button onclick="qrDlg.close()">Close</button></dialog>
-      <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
-      <script>
-        qrUrl.value = location.origin + '/'; // if this says localhost, type the LAN/public address users can reach
-        function showQr() {
-          const q = qrcode(0, 'M'); q.addData(qrUrl.value); q.make();
-          qr.innerHTML = q.createSvgTag({ cellSize: 10, margin: 2 });
-          qr.firstChild.style.cssText = 'width:min(80vw,80vh);height:auto';
-          qrTxt.textContent = qrUrl.value; qrDlg.showModal();
-        }
-      </script>
+      <form action="/admin/qr" target="_blank">Form link: <input name="url" id="qrUrl" size="40"> <button>Show QR</button></form>
+      <script>qrUrl.value = location.origin + '/'; // if this says localhost, type the LAN/public address users can reach</script>
       <h1>Claims (${rows.length})</h1><table><tr><th>#</th><th>Name</th><th>Address</th><th>Date</th><th>Minor</th><th>Submitted</th><th></th></tr>
       ${rows.map((r) => `<tr><td>${r.id}</td><td>${esc(r.name)}</td><td>${esc(r.address)}</td><td>${esc(r.sign_date)}</td>
         <td>${r.is_minor ? 'Yes' : 'No'}</td><td>${esc(r.created_at)}</td><td><a href="/?view=${r.id}">View / Print</a></td></tr>`).join('')}
       </table>`, 'text/html');
+  }
+
+  if (p === '/admin/qr') {
+    return send(res, 200, `<!doctype html><meta charset="utf-8"><title>Scan to claim</title>
+      <style>body{margin:0;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:sans-serif;background:#fff}
+      svg{width:min(85vw,80vh);height:auto}</style>
+      <h1>Scan to fill out the claim form</h1><div id="qr"></div><p id="txt"></p>
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
+      <script>
+        const url = new URLSearchParams(location.search).get('url') || location.origin + '/';
+        const q = qrcode(0, 'M'); q.addData(url); q.make();
+        qr.innerHTML = q.createSvgTag({ cellSize: 10, margin: 2 });
+        txt.textContent = url;
+      </script>`, 'text/html');
   }
 
   const m = p.match(/^\/api\/claims\/(\d+)$/);
