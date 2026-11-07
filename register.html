@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Registration</title>
+<style>
+  body { margin: 0; background: #e5e5e5; font-family: sans-serif; color: #000; }
+  .sheet { background: #fff; max-width: 480px; margin: 24px auto; padding: 32px 24px; box-shadow: 0 2px 8px rgba(0,0,0,.15); text-align: center; }
+  h1 { font-size: 20px; margin: 0 0 24px; }
+  label { display: block; text-align: left; font-size: 14px; margin-bottom: 6px; }
+  input { width: 100%; box-sizing: border-box; font: inherit; font-size: 16px; padding: 10px; border: 1px solid #999; border-radius: 4px; margin-bottom: 20px; }
+  canvas { width: 100%; height: 160px; border: 1px dashed #999; touch-action: none; cursor: crosshair; display: block; }
+  .clear { font-size: 12px; margin: 4px 0 20px; cursor: pointer; background: none; border: 0; color: #06c; text-decoration: underline; }
+  button[type=submit] { font-size: 16px; padding: 12px 32px; background: #111; color: #fff; border: 0; border-radius: 4px; cursor: pointer; }
+  #msg { margin-top: 12px; font-weight: bold; }
+  .check { width: 96px; height: 96px; border-radius: 50%; background: #1a9e3f; color: #fff; font-size: 64px; line-height: 96px; margin: 0 auto 16px; }
+  .done img { width: 100%; height: 120px; object-fit: contain; border-top: 1px solid #000; margin-top: 8px; }
+</style>
+</head>
+<body>
+<form id="form" class="sheet">
+  <h1>REGISTRATION</h1>
+  <label for="name">Full name</label>
+  <input type="text" id="name" name="name" required autocomplete="name">
+  <label for="sig">Signature</label>
+  <canvas id="sig"></canvas>
+  <button type="button" class="clear" id="clear">Clear signature</button><br>
+  <button type="submit" id="submit">Register</button>
+  <div id="msg" role="status"></div>
+</form>
+
+<script>
+const form = document.getElementById('form');
+const msg = document.getElementById('msg');
+
+// Signature pad: draw with mouse, finger or pen
+const c = document.getElementById('sig'), ctx = c.getContext('2d');
+let empty = true, drawing = false;
+const reset = () => {
+  c.width = c.offsetWidth * devicePixelRatio; c.height = c.offsetHeight * devicePixelRatio;
+  ctx.scale(devicePixelRatio, devicePixelRatio);
+  ctx.lineWidth = 2; ctx.lineCap = ctx.lineJoin = 'round'; empty = true;
+};
+const pos = (e) => { const r = c.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+c.addEventListener('pointerdown', (e) => { drawing = true; c.setPointerCapture(e.pointerId); ctx.beginPath(); ctx.moveTo(...pos(e)); });
+c.addEventListener('pointermove', (e) => { if (!drawing) return; ctx.lineTo(...pos(e)); ctx.stroke(); empty = false; });
+c.addEventListener('pointerup', () => drawing = false);
+document.getElementById('clear').onclick = reset;
+reset();
+
+form.onsubmit = async (e) => {
+  e.preventDefault();
+  if (empty) return msg.textContent = 'Please draw your signature.';
+  const signature = c.toDataURL('image/png');
+  const name = form.elements.name.value.trim();
+  document.getElementById('submit').disabled = true;
+  msg.textContent = 'Submitting…';
+  try {
+    const res = await fetch('/api/registrations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, signature }) });
+    const out = await res.json();
+    if (!res.ok) throw new Error(out.error);
+    form.className = 'sheet done';
+    form.innerHTML = '<div class="check" aria-hidden="true">&#10003;</div><h1>REGISTRATION COMPLETE</h1>'
+      + '<p>Reference no. <b>' + out.id + '</b></p><p id="who"></p><img alt="Your signature">';
+    form.querySelector('#who').textContent = name;
+    form.querySelector('img').src = signature;
+  } catch (err) {
+    msg.textContent = err.message || 'Registration failed. Please try again.';
+    document.getElementById('submit').disabled = false;
+  }
+};
+</script>
+</body>
+</html>

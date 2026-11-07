@@ -27,6 +27,12 @@ const SCHEMA = `CREATE TABLE IF NOT EXISTS claims (
   participant_sig BYTEA NOT NULL,
   guardian_sig BYTEA,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS registrations (
+  id SERIAL PRIMARY KEY,
+  name TEXT NOT NULL,
+  signature BYTEA NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 )`;
 // Everything except the signature bytes
 const COLS = 'id, name, address, printed_name, sign_date, is_minor, guardian_name, guardian_date, created_at';
@@ -64,6 +70,18 @@ async function handle(req, res) {
 
   // Public: the form
   if (req.method === 'GET' && p === '/') return send(res, 200, fs.readFileSync(path.join(__dirname, 'index.html')), 'text/html');
+  if (req.method === 'GET' && p === '/register') return send(res, 200, fs.readFileSync(path.join(__dirname, 'register.html')), 'text/html');
+
+  // Public: register (name + signature only)
+  if (req.method === 'POST' && p === '/api/registrations') {
+    let b;
+    try { b = await readBody(req); } catch { return send(res, 400, { error: 'Invalid request' }); }
+    const name = str(b.name);
+    if (!name || !isPng(b.signature)) return send(res, 400, { error: 'Please enter your name and sign.' });
+    const { rows: [{ id }] } = await db.query(
+      'INSERT INTO registrations (name, signature) VALUES ($1, $2) RETURNING id', [name, png(b.signature)]);
+    return send(res, 201, { id });
+  }
 
   // Public: keep-alive ping (cron-job.org) — touches the DB so Supabase doesn't pause
   if (p === '/health') {
@@ -106,10 +124,25 @@ async function handle(req, res) {
     return send(res, 200, `<!doctype html><meta charset="utf-8"><title>Claims</title>
       <style>body{font-family:sans-serif;padding:16px}table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:6px;text-align:left}</style>
       <form action="/admin/qr" target="_blank">Form link: <input name="url" id="qrUrl" size="40"> <button>Show QR</button></form>
-      <script>qrUrl.value = location.origin + '/'; // if this says localhost, type the LAN/public address users can reach</script>
+      <form action="/admin/qr" target="_blank">Registration link: <input name="url" id="regQrUrl" size="40"> <button>Show QR</button></form>
+      <script>qrUrl.value = location.origin + '/'; regQrUrl.value = location.origin + '/register'; // if this says localhost, type the LAN/public address users can reach</script>
+      <p><a href="/admin/registrations">Registrations &rarr;</a></p>
       <h1>Claims (${rows.length})</h1><table><tr><th>#</th><th>Name</th><th>Address</th><th>Minor</th><th>Submitted</th><th></th></tr>
       ${rows.map((r) => `<tr><td>${r.id}</td><td>${esc(r.name)}</td><td>${esc(r.address)}</td>
         <td>${r.is_minor ? 'Yes' : 'No'}</td><td>${esc(r.created_at.toLocaleString())}</td><td><a href="/?view=${r.id}">View / Print</a></td></tr>`).join('')}
+      </table>`, 'text/html');
+  }
+
+  if (p === '/admin/registrations') {
+    const { rows } = await db.query('SELECT id, name, created_at FROM registrations ORDER BY id DESC');
+    const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (ch) => `&#${ch.charCodeAt(0)};`);
+    return send(res, 200, `<!doctype html><meta charset="utf-8"><title>Registrations</title>
+      <style>body{font-family:sans-serif;padding:16px}table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:6px;text-align:left}img{height:60px}</style>
+      <p><a href="/admin">&larr; Claims</a> &middot; <a href="/admin/qr?url=" id="qr" target="_blank">QR for registration form</a></p>
+      <script>qr.href += encodeURIComponent(location.origin + '/register');</script>
+      <h1>Registrations (${rows.length})</h1><table><tr><th>#</th><th>Name</th><th>Signature</th><th>Registered</th></tr>
+      ${rows.map((r) => `<tr><td>${r.id}</td><td>${esc(r.name)}</td><td><img src="/signatures/reg-${r.id}.png" alt="Signature of ${esc(r.name)}"></td>
+        <td>${esc(r.created_at.toLocaleString())}</td></tr>`).join('')}
       </table>`, 'text/html');
   }
 
@@ -138,6 +171,11 @@ async function handle(req, res) {
   if (s) {
     const { rows: [row] } = await db.query(`SELECT ${s[2]}_sig AS img FROM claims WHERE id = $1`, [Number(s[1])]);
     if (row?.img) return send(res, 200, row.img, 'image/png');
+  }
+  const rs = p.match(/^\/signatures\/reg-(\d+)\.png$/);
+  if (rs) {
+    const { rows: [row] } = await db.query('SELECT signature FROM registrations WHERE id = $1', [Number(rs[1])]);
+    if (row) return send(res, 200, row.signature, 'image/png');
   }
 
   send(res, 404, 'Not found', 'text/plain');
